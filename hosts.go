@@ -71,6 +71,23 @@ func die(err error) {
 	}
 }
 
+func summarise(inst *ec2.Instance) {
+	var name, env, customer string
+	name = first_tag_matching("Name", inst)
+	env = first_tag_matching("Env", inst)
+	customer = first_tag_matching("Customer", inst)
+	if name == "" {
+		log.Printf("warning: %s in %s is missing a name tag",
+			*inst.InstanceId,
+			*inst.Placement.AvailabilityZone)
+	} else {
+		fmt.Println(name, env, customer,
+			*inst.InstanceId,
+			*inst.Placement.AvailabilityZone,
+			*inst.PrivateIpAddress)
+	}
+}
+
 func main() {
 
 	usage := `AWS hosts
@@ -87,7 +104,6 @@ Options:
 
 	args, _ := docopt.Parse(usage, nil, true, VERSION, false)
 
-	var name, env, customer string
 	regions := []string{"us-east-1", "eu-west-1"}
 	instances := make(chan *ec2.Instance, len(regions))
 
@@ -99,19 +115,6 @@ Options:
 		go Instances(region, sess, filter, instances)
 	}
 	for inst := range instances {
-		name = first_tag_matching("Name", inst)
-		env = first_tag_matching("Env", inst)
-		customer = first_tag_matching("Customer", inst)
-		if name == "" {
-			log.Printf("warning: %s in %s is missing a name tag",
-				*inst.InstanceId,
-				*inst.Placement.AvailabilityZone)
-		} else {
-			fmt.Println(name, env, customer,
-				*inst.InstanceId,
-				*inst.Placement.AvailabilityZone,
-				*inst.PrivateIpAddress)
-		}
-	}
-	fmt.Println("made it here")
+    summarise(inst)
+  }
 }
