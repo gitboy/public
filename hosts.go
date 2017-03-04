@@ -29,15 +29,6 @@ func NewSession() *Session {
 	return &Session{s: sess}
 }
 
-func collect(output *ec2.DescribeInstancesOutput, results chan *ec2.Instance) {
-	for i, _ := range output.Reservations {
-		for _, inst := range output.Reservations[i].Instances {
-			results <- inst
-		}
-	}
-	close(results)
-}
-
 func (s *Session) query_region(f Filter, region string) <-chan *ec2.Instance {
 	results := make(chan *ec2.Instance)
 	client := ec2.New(s.s, &aws.Config{Region: aws.String(region)})
@@ -78,6 +69,15 @@ func (f *Filter) add(name string, vals ...string) {
 	}
 	rule := &ec2.Filter{Name: &name, Values: criteria}
 	f.rules = append(f.rules, rule)
+}
+
+func collect(output *ec2.DescribeInstancesOutput, results chan *ec2.Instance) {
+	for i, _ := range output.Reservations {
+		for _, inst := range output.Reservations[i].Instances {
+			results <- inst
+		}
+	}
+	close(results)
 }
 
 func sanitised(args map[string]interface{}) map[string]string {
