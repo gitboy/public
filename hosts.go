@@ -29,7 +29,7 @@ func NewSession() *Session {
 	return &Session{s: sess}
 }
 
-func (s *Session) query_region(f Filter, region string) <-chan *ec2.Instance {
+func (s *Session) query_region(f Filter, region string) chan *ec2.Instance {
 	results := make(chan *ec2.Instance)
 	client := ec2.New(s.s, &aws.Config{Region: aws.String(region)})
 	describe := &ec2.DescribeInstancesInput{Filters: f.rules}
@@ -39,8 +39,8 @@ func (s *Session) query_region(f Filter, region string) <-chan *ec2.Instance {
 	return results
 }
 
-func (s *Session) query(f Filter, regions []string) <-chan *ec2.Instance {
-	responses := []<-chan *ec2.Instance{}
+func (s *Session) query(f Filter, regions []string) chan *ec2.Instance {
+	responses := []chan *ec2.Instance{}
 	for _, r := range regions {
 		response := s.query_region(f, r)
 		responses = append(responses, response)
@@ -112,7 +112,7 @@ func summarise(inst *ec2.Instance) {
 	fmt.Println(inst)
 }
 
-func merge(cs []<-chan *ec2.Instance) <-chan *ec2.Instance {
+func merge(cs []chan *ec2.Instance) chan *ec2.Instance {
 	var wg sync.WaitGroup
 	results := make(chan *ec2.Instance)
 	output := func(c <-chan *ec2.Instance) {
