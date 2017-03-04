@@ -1,3 +1,9 @@
+// hosts: potentiallinstnacey useful tool for Sessioning AWS infrastructure.
+// concurrent queries across all AWS regions -> fast!
+// you'll need sufficiently privileged AWS credentials
+// author: russd
+// vim:ts=4
+
 package main
 
 import (
@@ -9,56 +15,92 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 )
 
 const VERSION string = "hosts-1.0"
 
-func first_tag_matching(key string, inst *ec2.Instance) string {
-	for _, tag := range inst.Tags {
-		if *tag.Key == key {
-			return fmt.Sprintf("%s=%s", strings.ToLower(key), *tag.Value)
-		}
-	}
-	return ""
+type Session struct {
+	s *session.Session
 }
 
-func build_filter(args map[string]interface{}) []*ec2.Filter {
-	// map args keys --customer -> Customer and return a tag filter
-	filters := []*ec2.Filter{}
+func NewSession() *Session {
+	sess, err := session.NewSession()
+	die(err)
+	return &Session{s: sess}
+}
+
+func collect(output *ec2.DescribeInstancesOutput, results chan *ec2.Instance) {
+	for i, _ := range output.Reservations {
+		for _, inst := range output.Reservations[i].Instances {
+			results <- inst
+		}
+	}
+	close(results)
+}
+
+func (s *Session) query_region(f Filter, region string) <-chan *ec2.Instance {
+	results := make(chan *ec2.Instance)
+	client := ec2.New(s.s, &aws.Config{Region: aws.String(region)})
+	describe := &ec2.DescribeInstancesInput{Filters: f.rules}
+	output, err := client.DescribeInstances(describe)
+	die(err)
+	go collect(output, results)
+	return results
+}
+
+func (s *Session) query(f Filter, regions []string) <-chan *ec2.Instance {
+	responses := []<-chan *ec2.Instance{}
+	for _, r := range regions {
+		response := s.query_region(f, r)
+		responses = append(responses, response)
+	}
+	return merge(responses)
+}
+
+type Filter struct {
+	rules []*ec2.Filter
+}
+
+func (f Filter) String() string {
+	var repr string
+	var rules []string
+	for _, rule := range f.rules {
+		repr = rule.String()
+		rules = append(rules, repr)
+	}
+	return strings.Join(rules, ",")
+}
+
+func (f *Filter) add(name string, vals ...string) {
+	criteria := []*string{}
+	for _, val := range vals {
+		criteria = append(criteria, aws.String(val))
+	}
+	rule := &ec2.Filter{Name: &name, Values: criteria}
+	f.rules = append(f.rules, rule)
+}
+
+func sanitised(args map[string]interface{}) map[string]string {
+	m := make(map[string]string)
 	for option, value := range args {
 		if value != nil && value != false {
-			name := strings.Title(option[2:]) // --customer -> Customer
-			filter_name := fmt.Sprintf("tag:%s", name)
-			filters = append(filters, &ec2.Filter{
-				Name:   aws.String(filter_name),
-				Values: []*string{aws.String(value.(string))},
-			})
+			k := tag(undash(option)) // --env -> tag:Env
+			v := value.(string)
+			m[k] = v
 		}
 	}
-	running := &ec2.Filter{
-		Name:   aws.String("instance-state-name"),
-		Values: []*string{aws.String("running"), aws.String("pending")},
-	}
-	filters = append(filters, running) // limit to running or pending instances
-	return filters
+	return m
 }
 
-func Instances(region string, sess *session.Session, filter []*ec2.Filter) <-chan *ec2.Instance {
-	// first stab at pulling pending/running instances from an AWS region
-	out := make(chan *ec2.Instance, 10)
-	client := ec2.New(sess, &aws.Config{Region: aws.String(region)})
-	params := &ec2.DescribeInstancesInput{Filters: filter}
-	resp, err := client.DescribeInstances(params)
-	die(err)
-  go func() {
-    for idx, _ := range resp.Reservations {
-      for _, inst := range resp.Reservations[idx].Instances {
-        out <- inst
-      }
-    }
-    close(out)
-  }()
-	return out
+func tag(name string) string {
+	const spec string = "tag:%s"
+	return fmt.Sprintf(spec, name)
+}
+
+func undash(s string) string {
+	no_dashes := strings.Replace(s, "-", "", -1)
+	return strings.Title(no_dashes) // --env -> Env
 }
 
 func die(err error) {
@@ -68,69 +110,52 @@ func die(err error) {
 }
 
 func summarise(inst *ec2.Instance) {
-	var name, env, customer string
-	name = first_tag_matching("Name", inst)
-	env = first_tag_matching("Env", inst)
-	customer = first_tag_matching("Customer", inst)
-	if name == "" {
-		log.Printf("warning: %s in %s is missing a name tag",
-			*inst.InstanceId,
-			*inst.Placement.AvailabilityZone)
-	} else {
-		fmt.Println(name, env, customer,
-			first_tag_matching("Role", inst),
-			*inst.InstanceId,
-			*inst.Placement.AvailabilityZone,
-			*inst.PrivateIpAddress)
-	}
+	//fmt.Println(inst)
 }
 
 func merge(cs []<-chan *ec2.Instance) <-chan *ec2.Instance {
-  // shamelessly lifted and modifiedfrom interwebz
 	var wg sync.WaitGroup
-	out := make(chan *ec2.Instance)
+	results := make(chan *ec2.Instance)
 	output := func(c <-chan *ec2.Instance) {
 		for n := range c {
-			out <- n
+			results <- n
 		}
 		wg.Done()
 	}
 	wg.Add(len(cs))
 	for _, c := range cs {
-	  go output(c)
+		go output(c)
 	}
 	go func() {
 		wg.Wait()
-		close(out)
+		close(results)
 	}()
-	return out
+	return results
 }
 
 func main() {
 
 	usage := `AWS hosts
-  Usage:
-  hosts [-r role] [-c customer] [-e environment]
-  hosts --version
+    Usage:
+      hosts [-r role] [-c customer] [-e environment]
+      hosts --version
 
-Options:
-  -h --help               Show this screen.
-  -r, --role role         find hosts in these roles
-  -c, --customer customer find hosts related to this customer
-  -e, --env env           find hosts in this environment
-  `
-
+      Options:
+      -h --help               Show this screen.
+      -r, --role role         find hosts in these roles
+      -c, --customer customer find hosts related to this customer
+      -e, --env env           find hosts in this environment
+   `
+	var filter Filter
+	session := NewSession()
 	args, _ := docopt.Parse(usage, nil, true, VERSION, false)
 	regions := []string{"us-east-1", "eu-west-1"}
-	instances := make([]<- chan *ec2.Instance, len(regions))
-	filter := build_filter(args)
-	sess, err := session.NewSession()
-	die(err)
-	for i, region := range regions {
-		instances[i] = Instances(region, sess, filter)
+	filter.add("instance-state-name", "running", "pending")
+	for option, value := range sanitised(args) {
+		filter.add(option, value)
 	}
-	for inst := range merge(instances) {
+	instances := session.query(filter, regions)
+	for inst := range instances {
 		summarise(inst)
 	}
-  fmt.Println("==============")
 }
