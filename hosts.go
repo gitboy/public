@@ -1,4 +1,4 @@
-// hosts: potentiallinstnacey useful tool for Sessioning AWS infrastructure.
+// hosts: potentially useful tool for searching  AWS infrastructure.
 // concurrent queries across all AWS regions -> fast!
 // you'll need sufficiently privileged AWS credentials
 // author: russd
