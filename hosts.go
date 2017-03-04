@@ -8,24 +8,21 @@ import (
 	"github.com/docopt/docopt-go"
 	"log"
 	"strings"
+	"sync"
 )
 
 const VERSION string = "hosts-1.0"
 
-func commas(items []string) string {
-	return strings.Join(items, ", ")
-}
-
 func first_tag_matching(key string, inst *ec2.Instance) string {
 	for _, tag := range inst.Tags {
 		if *tag.Key == key {
-			return *tag.Value
+			return fmt.Sprintf("%s=%s", strings.ToLower(key), *tag.Value)
 		}
 	}
 	return ""
 }
 
-func args_to_tag_filter(args map[string]interface{}) []*ec2.Filter {
+func build_filter(args map[string]interface{}) []*ec2.Filter {
 	// map args keys --customer -> Customer and return a tag filter
 	filters := []*ec2.Filter{}
 	for option, value := range args {
@@ -38,31 +35,30 @@ func args_to_tag_filter(args map[string]interface{}) []*ec2.Filter {
 			})
 		}
 	}
-	return filters
-}
-
-func make_filter(args map[string]interface{}) []*ec2.Filter {
 	running := &ec2.Filter{
 		Name:   aws.String("instance-state-name"),
 		Values: []*string{aws.String("running"), aws.String("pending")},
 	}
-
-	filters := args_to_tag_filter(args)
-	filters = append(filters, running)
+	filters = append(filters, running) // limit to running or pending instances
 	return filters
 }
 
-func Instances(region string, sess *session.Session, filter []*ec2.Filter, instances chan *ec2.Instance) {
+func Instances(region string, sess *session.Session, filter []*ec2.Filter) <-chan *ec2.Instance {
 	// first stab at pulling pending/running instances from an AWS region
+	out := make(chan *ec2.Instance, 10)
 	client := ec2.New(sess, &aws.Config{Region: aws.String(region)})
 	params := &ec2.DescribeInstancesInput{Filters: filter}
 	resp, err := client.DescribeInstances(params)
 	die(err)
-	for idx, _ := range resp.Reservations {
-		for _, inst := range resp.Reservations[idx].Instances {
-			instances <- inst
-		}
-	}
+  go func() {
+    for idx, _ := range resp.Reservations {
+      for _, inst := range resp.Reservations[idx].Instances {
+        out <- inst
+      }
+    }
+    close(out)
+  }()
+	return out
 }
 
 func die(err error) {
@@ -82,10 +78,32 @@ func summarise(inst *ec2.Instance) {
 			*inst.Placement.AvailabilityZone)
 	} else {
 		fmt.Println(name, env, customer,
+			first_tag_matching("Role", inst),
 			*inst.InstanceId,
 			*inst.Placement.AvailabilityZone,
 			*inst.PrivateIpAddress)
 	}
+}
+
+func merge(cs []<-chan *ec2.Instance) <-chan *ec2.Instance {
+  // shamelessly lifted and modifiedfrom interwebz
+	var wg sync.WaitGroup
+	out := make(chan *ec2.Instance)
+	output := func(c <-chan *ec2.Instance) {
+		for n := range c {
+			out <- n
+		}
+		wg.Done()
+	}
+	wg.Add(len(cs))
+	for _, c := range cs {
+	  go output(c)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out
 }
 
 func main() {
@@ -103,18 +121,16 @@ Options:
   `
 
 	args, _ := docopt.Parse(usage, nil, true, VERSION, false)
-
 	regions := []string{"us-east-1", "eu-west-1"}
-	instances := make(chan *ec2.Instance, len(regions))
-
-	filter := make_filter(args)
-
+	instances := make([]<- chan *ec2.Instance, len(regions))
+	filter := build_filter(args)
 	sess, err := session.NewSession()
 	die(err)
-	for _, region := range regions {
-		go Instances(region, sess, filter, instances)
+	for i, region := range regions {
+		instances[i] = Instances(region, sess, filter)
 	}
-	for inst := range instances {
-    summarise(inst)
-  }
+	for inst := range merge(instances) {
+		summarise(inst)
+	}
+  fmt.Println("==============")
 }
