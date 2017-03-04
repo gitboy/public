@@ -15,7 +15,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"time"
 )
 
 const VERSION string = "hosts-1.0"
@@ -110,7 +109,7 @@ func die(err error) {
 }
 
 func summarise(inst *ec2.Instance) {
-	//fmt.Println(inst)
+	fmt.Println(inst)
 }
 
 func merge(cs []<-chan *ec2.Instance) <-chan *ec2.Instance {
