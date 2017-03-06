@@ -108,8 +108,23 @@ func die(err error) {
 	}
 }
 
+func find(key string, tags []*ec2.Tag) string {
+	for _, m := range tags {
+		if *m.Key == key {
+			return *m.Value
+		}
+	}
+	return ""
+}
+
 func summarise(inst *ec2.Instance) {
-	fmt.Println(inst)
+	fmt.Println(
+		find("Name", inst.Tags),
+		find("Env", inst.Tags),
+		find("Customer", inst.Tags),
+		*inst.PrivateDnsName,
+		*inst.PrivateIpAddress,
+	)
 }
 
 func merge(cs []chan *ec2.Instance) chan *ec2.Instance {
